@@ -1,2 +1,9 @@
-/config.py
-/token.env
+.env
+token.env
+node_modules/
+dist/
+*.tsbuildinfo
+.venv/
+venv/
+__pycache__/
+*.pyc
