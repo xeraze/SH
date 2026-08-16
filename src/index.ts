@@ -21,7 +21,13 @@ import { config } from "./config";
 import { loadEmbeds, jsonToEmbed, type EmbedData, type SelectOption } from "./lib/embeds";
 import { log } from "./lib/logger";
 import { parseDuration } from "./lib/duration";
-import { buildModEmbed, canExecute, hasHigherRole } from "./lib/moderation";
+import {
+  buildModEmbed,
+  canExecute,
+  canTarget,
+  hasHigherRole,
+  isGlobalAllowed,
+} from "./lib/moderation";
 import {
   loadBans,
   loadMutes,
@@ -90,8 +96,7 @@ function isAdmin(interaction: ChatInputCommandInteraction): boolean {
   const member = memberOf(interaction);
   return (
     !!member &&
-    (member.roles.cache.has(config.adminRoleId) ||
-      config.allowedGlobalUsers.includes(String(member.id)))
+    (member.roles.cache.has(config.adminRoleId) || isGlobalAllowed(member))
   );
 }
 
@@ -298,7 +303,7 @@ async function cmdSay(interaction: ChatInputCommandInteraction): Promise<void> {
   if (
     !member ||
     (!isAdmin(interaction) &&
-      !config.allowedGlobalUsers.includes(String(member.id)) &&
+      !isGlobalAllowed(member) &&
       !hasModRole)
   ) {
     await replyErr(interaction, "У вас немає прав для виконання цієї команди.");
@@ -351,7 +356,7 @@ async function cmdWarn(interaction: ChatInputCommandInteraction): Promise<void> 
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете попереджати користувача з роллю вище або ідентичною вашій.");
     return;
   }
@@ -471,7 +476,7 @@ async function cmdReprimand(interaction: ChatInputCommandInteraction): Promise<v
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете видавати догану цьому користувачу.");
     return;
   }
@@ -548,7 +553,7 @@ async function cmdKick(interaction: ChatInputCommandInteraction): Promise<void> 
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете кікати цього користувача.");
     return;
   }
@@ -587,7 +592,7 @@ async function cmdBan(interaction: ChatInputCommandInteraction): Promise<void> {
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете забанити цього користувача.");
     return;
   }
@@ -695,7 +700,7 @@ async function cmdMute(interaction: ChatInputCommandInteraction): Promise<void> 
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете замутити цього користувача.");
     return;
   }
@@ -775,6 +780,10 @@ async function cmdUnmute(interaction: ChatInputCommandInteraction): Promise<void
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
+  if (!canTarget(issuer, target)) {
+    await replyErr(interaction, "Ви не можете застосовувати це покарання до цього користувача.");
+    return;
+  }
   const reason = interaction.options.getString("reason") || "Причина не вказана";
   try {
     await target.timeout(null).catch(() => undefined);
@@ -826,7 +835,7 @@ async function cmdTempRole(interaction: ChatInputCommandInteraction): Promise<vo
     await replyErr(interaction, "Вкажіть користувача та роль.");
     return;
   }
-  if (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId) {
+  if (!canTarget(issuer, target) || (!hasHigherRole(issuer, target) && issuer.id !== interaction.guild!.ownerId)) {
     await replyErr(interaction, "Ви не можете призначати роль цьому користувачу.");
     return;
   }
@@ -882,6 +891,10 @@ async function cmdUnrole(interaction: ChatInputCommandInteraction): Promise<void
   const role = interaction.options.getRole("role");
   if (!target || !role) {
     await replyErr(interaction, "Вкажіть користувача та роль.");
+    return;
+  }
+  if (!canTarget(issuer, target)) {
+    await replyErr(interaction, "Ви не можете застосовувати це покарання до цього користувача.");
     return;
   }
   const reason = interaction.options.getString("reason") || "Причина не вказана";
@@ -944,6 +957,10 @@ async function cmdBlacklist(interaction: ChatInputCommandInteraction): Promise<v
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
+  if (!canTarget(issuer, target)) {
+    await replyErr(interaction, "Ви не можете застосовувати це покарання до цього користувача.");
+    return;
+  }
   const reason = interaction.options.getString("reason") || "Причина не вказана";
   try {
     await target.roles.add(config.blacklistRoleId, `blacklist by ${issuer.user.username} (ID: ${issuer.id})`);
@@ -983,6 +1000,10 @@ async function cmdUnblacklist(interaction: ChatInputCommandInteraction): Promise
     await replyErr(interaction, "Користувача не знайдено.");
     return;
   }
+  if (!canTarget(issuer, target)) {
+    await replyErr(interaction, "Ви не можете застосовувати це покарання до цього користувача.");
+    return;
+  }
   const reason = interaction.options.getString("reason") || "Причина не вказана";
   try {
     await target.roles.remove(config.blacklistRoleId, `unblacklist by ${issuer.user.username}`);
@@ -1010,6 +1031,7 @@ async function cmdClear(interaction: ChatInputCommandInteraction): Promise<void>
   }
   const count = Math.min(Math.max(interaction.options.getInteger("count", true), 1), 1000);
   const targetUser = interaction.options.getUser("user") ?? null;
+  const reason = interaction.options.getString("reason") || "Не вказано";
   const channel = interaction.channel;
   if (!channel || !("bulkDelete" in channel)) {
     await replyErr(interaction, "Цю команду необхідно використовувати в текстовому каналі.");
@@ -1037,13 +1059,15 @@ async function cmdClear(interaction: ChatInputCommandInteraction): Promise<void>
     await replyErr(interaction, `Не вдалося очистити: ${e}`);
     return;
   }
-  const embed = modActionEmbed({
-    title: "Повідомлення очищено",
-    color: 0x3498db,
-    target: targetUser ? `Повідомлення: ${targetUser.toString()}` : "Усі повідомлення",
-    executor: `${issuer.user.username} (ID: ${issuer.id})`,
-    duration: String(deleted),
-  });
+  const embed = new EmbedBuilder({ title: "Повідомлення очищено", color: 0x3498db })
+    .setDescription(targetUser ? `Повідомлення від: ${targetUser.toString()}` : "Усі повідомлення")
+    .addFields(
+      { name: "Модератор:", value: `${issuer.user.username} (ID: ${issuer.id})`, inline: true },
+      { name: "Коли:", value: `<t:${nowTs()}:F>`, inline: true },
+      { name: "Кількість:", value: String(deleted), inline: true },
+      { name: "Причина:", value: reason, inline: false },
+    )
+    .setFooter({ text: "Sloboda Hospital" });
   await logToModChannel(embed);
   await replyOk(interaction, `✅ Видалено ${deleted} повідомлень${targetUser ? ` від ${targetUser.toString()}` : ""}.`);
 }
@@ -1179,7 +1203,8 @@ function buildCommands(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
       .setName("clear")
       .setDescription("Очистити повідомлення в каналі")
       .addIntegerOption((o) => o.setName("count").setDescription("Кількість (1-1000)").setRequired(true))
-      .addUserOption((o) => o.setName("user").setDescription("Лише повідомлення цього користувача").setRequired(false)).toJSON(),
+      .addUserOption((o) => o.setName("user").setDescription("Лише повідомлення цього користувача").setRequired(false))
+      .addStringOption((o) => o.setName("reason").setDescription("Причина").setRequired(false)).toJSON(),
     withUser(true)
       .setName("blacklist")
       .setDescription("Внести користувача до ЧС")
