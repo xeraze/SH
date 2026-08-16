@@ -322,6 +322,7 @@ async function cmdHelp(interaction: ChatInputCommandInteraction): Promise<void> 
     ["embeds", "Список ембедів"],
     ["embeds-reload", "Перезавантажити ембеди (адмін)"],
     ["say <text>", "Надіслати текст від імені бота (адмін)"],
+    ["status", "Інформація про бота"],
     ["warn <user> [reason]", "Попередження"],
     ["warns [user]", "Список попереджень"],
     ["unwarn <user> [id]", "Зняти попередження"],
@@ -342,6 +343,35 @@ async function cmdHelp(interaction: ChatInputCommandInteraction): Promise<void> 
   ];
   const lines = commands.map(([sig, brief]) => `\`/${sig}\` — ${brief}`);
   await replyEphemeral(interaction, `**Команди бота**\n\n${lines.join("\n")}`);
+}
+
+async function cmdStatus(interaction: ChatInputCommandInteraction): Promise<void> {
+  const embed = new EmbedBuilder({
+    color: 0x3498db,
+    title: "Статус бота",
+    thumbnail: { url: client.user?.displayAvatarURL() ?? "" },
+  });
+  const uptimeSec = Math.floor((client.uptime ?? 0) / 1000);
+  const d = Math.floor(uptimeSec / 86400);
+  const h = Math.floor((uptimeSec % 86400) / 3600);
+  const m = Math.floor((uptimeSec % 3600) / 60);
+  const sec = uptimeSec % 60;
+  const uptimeParts: string[] = [];
+  if (d) uptimeParts.push(`${d} дн.`);
+  if (h) uptimeParts.push(`${h} год.`);
+  if (m) uptimeParts.push(`${m} хв.`);
+  uptimeParts.push(`${sec} сек.`);
+  const commands = buildCommands();
+  const lines = [
+    `🤖 Бот: **${client.user?.tag ?? "?"}**`,
+    `📶 Пінг: \`${client.ws.ping} мс\``,
+    `⏱ Аптайм: \`${uptimeParts.join(" ")}\``,
+    `🖥 Сервер: \`${interaction.guild?.name ?? "—"}\``,
+    `📝 Команд: \`${commands.length}\``,
+    `👤 Користувачів на сервері: \`${interaction.guild?.memberCount ?? "—"}\``,
+  ];
+  embed.setDescription(lines.join("\n")).setFooter({ text: `Shard: ${interaction.guild?.shardId ?? 0}` });
+  await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => undefined);
 }
 
 async function cmdWarn(interaction: ChatInputCommandInteraction): Promise<void> {
@@ -1079,6 +1109,7 @@ const handlers: Record<string, (i: ChatInputCommandInteraction) => Promise<void>
   "embeds-reload": cmdEmbedsReload,
   say: cmdSay,
   help: cmdHelp,
+  status: cmdStatus,
   warn: cmdWarn,
   warns: cmdWarns,
   unwarn: cmdUnwarn,
@@ -1131,6 +1162,9 @@ function buildCommands(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
     new SlashCommandBuilder()
       .setName("help")
       .setDescription("Список команд").toJSON(),
+    new SlashCommandBuilder()
+      .setName("status")
+      .setDescription("Інформація про бота").toJSON(),
     withUser(true)
       .setName("warn")
       .setDescription("Видати попередження")
