@@ -289,7 +289,7 @@ async function cmdEmbeds(interaction: ChatInputCommandInteraction): Promise<void
 }
 
 async function cmdEmbedsReload(interaction: ChatInputCommandInteraction): Promise<void> {
-  if (!config.embedsReloadUsers.includes(String(interaction.user.id))) {
+  if (!(config.embedsReloadUsers ?? []).includes(String(interaction.user.id))) {
     await replyErr(interaction, "У вас немає прав для виконання цієї команди.");
     return;
   }
