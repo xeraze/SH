@@ -1,7 +1,11 @@
-import "dotenv/config";
 import { config as loadDotenv } from "dotenv";
 import fs from "node:fs";
 import path from "node:path";
+
+const envPath = path.join(process.cwd(), ".env");
+if (fs.existsSync(envPath)) {
+  loadDotenv({ path: envPath });
+}
 
 const tokenEnvPath = path.join(process.cwd(), "token.env");
 if (fs.existsSync(tokenEnvPath)) {
