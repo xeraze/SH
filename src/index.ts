@@ -1,31 +1,43 @@
+import { execSync } from "node:child_process";
+import crypto from "node:crypto";
 import {
   ActionRowBuilder,
   ActivityType,
+  ButtonBuilder,
+  ButtonStyle,
   Client,
   EmbedBuilder,
   Events,
   GatewayIntentBits,
   GuildMember,
   MessageFlags,
+  ModalActionRowComponentBuilder,
+  ModalBuilder,
   REST,
   Routes,
   SlashCommandBuilder,
   StringSelectMenuBuilder,
   StringSelectMenuOptionBuilder,
   TextChannel,
+  TextInputBuilder,
+  TextInputStyle,
   type ChatInputCommandInteraction,
+  type Interaction,
   type RESTPostAPIChatInputApplicationCommandsJSONBody,
   type StringSelectMenuInteraction,
 } from "discord.js";
 import { config } from "./config";
-import { loadEmbeds, jsonToEmbed, type EmbedData, type SelectOption } from "./lib/embeds";
+import { baseEmbed, loadEmbeds, jsonToEmbed, type EmbedData, type SelectOption } from "./lib/embeds";
+import { logErrorToChannel, userLabel } from "./lib/errors";
 import { log } from "./lib/logger";
+import { notifyUser } from "./lib/notify";
 import { parseDuration } from "./lib/duration";
 import {
   buildModEmbed,
   canExecute,
   canTarget,
   hasHigherRole,
+  isAdminRole,
   isGlobalAllowed,
 } from "./lib/moderation";
 import {
@@ -88,6 +100,43 @@ function nowTs(): number {
   return Math.floor(Date.now() / 1000);
 }
 
+function formatBytes(kb: number): string {
+  if (kb >= 1048576) return `${(kb / 1048576).toFixed(1)} ГБ`;
+  if (kb >= 1024) return `${(kb / 1024).toFixed(1)} МБ`;
+  return `${Math.round(kb)} КБ`;
+}
+
+function diskUsage(): string {
+  try {
+    const out = execSync("df -k /home/container 2>/dev/null || df -k /", { encoding: "utf8" });
+    const line = out.trim().split("\n").filter((l) => !l.startsWith("Filesystem")).pop();
+    if (!line) return "—";
+    const parts = line.split(/\s+/).filter(Boolean);
+    if (parts.length < 5) return "—";
+    const used = Number(parts[2]);
+    const available = Number(parts[3]);
+    const total = used + available;
+    const pct = total > 0 ? Math.round((used / total) * 100) : 0;
+    return `${formatBytes(used)} / ${formatBytes(total)} (${pct}%) · вільно ${formatBytes(available)}`;
+  } catch {
+    return "—";
+  }
+}
+
+function formatUptime(ms: number): string {
+  const s = Math.floor(ms / 1000);
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const parts: string[] = [];
+  if (d) parts.push(`${d} дн.`);
+  if (h) parts.push(`${h} год.`);
+  if (m) parts.push(`${m} хв.`);
+  parts.push(`${sec} сек.`);
+  return parts.join(" ");
+}
+
 function memberOf(interaction: ChatInputCommandInteraction): GuildMember | null {
   return interaction.member as GuildMember | null;
 }
@@ -125,9 +174,7 @@ async function sendPublic(
 }
 
 async function dmUser(member: GuildMember, embed: EmbedBuilder): Promise<void> {
-  try {
-    await member.send({ embeds: [embed] });
-  } catch {}
+  await notifyUser(client, member.id, { embeds: [embed] });
 }
 
 async function logToModChannel(embed: EmbedBuilder): Promise<void> {
@@ -322,6 +369,7 @@ async function cmdHelp(interaction: ChatInputCommandInteraction): Promise<void> 
     ["embeds", "Список ембедів"],
     ["embeds-reload", "Перезавантажити ембеди (адмін)"],
     ["say <text>", "Надіслати текст від імені бота (адмін)"],
+    ["post", "Опублікувати пост у канал"],
     ["status", "Інформація про бота"],
     ["warn <user> [reason]", "Попередження"],
     ["warns [user]", "Список попереджень"],
@@ -351,24 +399,20 @@ async function cmdStatus(interaction: ChatInputCommandInteraction): Promise<void
     title: "Статус бота",
     thumbnail: { url: client.user?.displayAvatarURL() ?? "" },
   });
-  const uptimeSec = Math.floor((client.uptime ?? 0) / 1000);
-  const d = Math.floor(uptimeSec / 86400);
-  const h = Math.floor((uptimeSec % 86400) / 3600);
-  const m = Math.floor((uptimeSec % 3600) / 60);
-  const sec = uptimeSec % 60;
-  const uptimeParts: string[] = [];
-  if (d) uptimeParts.push(`${d} дн.`);
-  if (h) uptimeParts.push(`${h} год.`);
-  if (m) uptimeParts.push(`${m} хв.`);
-  uptimeParts.push(`${sec} сек.`);
   const commands = buildCommands();
   const lines = [
     `🤖 Бот: **${client.user?.tag ?? "?"}**`,
     `📶 Пінг: \`${client.ws.ping} мс\``,
-    `⏱ Аптайм: \`${uptimeParts.join(" ")}\``,
+    `⏱ Аптайм: \`${formatUptime(client.uptime ?? 0)}\``,
     `🖥 Сервер: \`${interaction.guild?.name ?? "—"}\``,
     `📝 Команд: \`${commands.length}\``,
     `👤 Користувачів на сервері: \`${interaction.guild?.memberCount ?? "—"}\``,
+    `⚠️ Попереджень: \`${loadWarns().length}\``,
+    `🏳️ Доган: \`${loadReprimands().length}\``,
+    `🔇 Активних мутів: \`${loadMutes().length}\``,
+    `🚫 Банів у базі: \`${loadBans().length}\``,
+    `⏱ Тимчасових ролей: \`${loadTemproles().length}\``,
+    `💽 Диск: \`${diskUsage()}\``,
   ];
   embed.setDescription(lines.join("\n")).setFooter({ text: `Shard: ${interaction.guild?.shardId ?? 0}` });
   await interaction.reply({ embeds: [embed], flags: MessageFlags.Ephemeral }).catch(() => undefined);
@@ -1102,6 +1146,296 @@ async function cmdClear(interaction: ChatInputCommandInteraction): Promise<void>
   await replyOk(interaction, `✅ Видалено ${deleted} повідомлень${targetUser ? ` від ${targetUser.toString()}` : ""}.`);
 }
 
+interface PostDraft {
+  title: string;
+  description: string;
+  imageUrl: string;
+  pings: string[];
+}
+
+const drafts = new Map<string, PostDraft>();
+const previewRefs = new Map<string, { channelId: string; messageId: string }>();
+
+function modalRow(
+  ...components: ModalActionRowComponentBuilder[]
+): ActionRowBuilder<ModalActionRowComponentBuilder> {
+  return new ActionRowBuilder<ModalActionRowComponentBuilder>().addComponents(components);
+}
+
+function buttonRow(...buttons: ButtonBuilder[]): ActionRowBuilder<ButtonBuilder> {
+  return new ActionRowBuilder<ButtonBuilder>().addComponents(buttons);
+}
+
+function canPost(member: GuildMember | null): boolean {
+  if (!member || !member.roles?.cache) return false;
+  if (member.roles.cache.some((r) => config.postRoleIds.includes(r.id))) return true;
+  return isAdminRole(member) || isGlobalAllowed(member);
+}
+
+function buildPostStartView(): ActionRowBuilder<ButtonBuilder>[] {
+  const edit = new ButtonBuilder()
+    .setCustomId("post_edit")
+    .setLabel("Заповнити текст")
+    .setStyle(ButtonStyle.Primary)
+    .setEmoji("🎨");
+  return [buttonRow(edit)];
+}
+
+function buildPostModal(): ModalBuilder {
+  const title = new TextInputBuilder()
+    .setCustomId("post_title")
+    .setLabel("Назва поста")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("Заголовок поста...")
+    .setMaxLength(256)
+    .setRequired(true);
+  const description = new TextInputBuilder()
+    .setCustomId("post_description")
+    .setLabel("Опис поста")
+    .setPlaceholder("Текст поста...")
+    .setStyle(TextInputStyle.Paragraph)
+    .setMaxLength(4000)
+    .setRequired(true);
+  const image = new TextInputBuilder()
+    .setCustomId("post_image")
+    .setLabel("Зображення (необов'язково)")
+    .setStyle(TextInputStyle.Short)
+    .setPlaceholder("https://example.com/image.png")
+    .setRequired(false)
+    .setMaxLength(500);
+  const pings = new TextInputBuilder()
+    .setCustomId("post_pings")
+    .setLabel("Пінги ролей (необов'язково)")
+    .setPlaceholder("<@&1234>, <@&5678>")
+    .setStyle(TextInputStyle.Paragraph)
+    .setRequired(false)
+    .setMaxLength(200);
+  return new ModalBuilder()
+    .setCustomId("post_modal")
+    .setTitle("Публікація поста")
+    .addComponents(
+      modalRow(title),
+      modalRow(description),
+      modalRow(image),
+      modalRow(pings),
+    );
+}
+
+function buildPostPreviewView(token: string): ActionRowBuilder<ButtonBuilder>[] {
+  const publish = new ButtonBuilder()
+    .setCustomId(`post_publish:${token}`)
+    .setLabel("Опублікувати")
+    .setStyle(ButtonStyle.Success)
+    .setEmoji("✅");
+  const edit = new ButtonBuilder()
+    .setCustomId(`post_edit:${token}`)
+    .setLabel("Редагувати")
+    .setStyle(ButtonStyle.Primary)
+    .setEmoji("✏️");
+  const cancel = new ButtonBuilder()
+    .setCustomId(`post_cancel:${token}`)
+    .setLabel("Скасувати")
+    .setStyle(ButtonStyle.Secondary)
+    .setEmoji("❌");
+  return [buttonRow(publish, edit, cancel)];
+}
+
+async function cmdPost(interaction: ChatInputCommandInteraction): Promise<void> {
+  if (!canPost(memberOf(interaction))) {
+    await replyEphemeral(interaction, "У вас немає прав для цієї команди.");
+    return;
+  }
+  const preview = baseEmbed({
+    title: "Публікація поста",
+    description:
+      "Натисніть кнопку нижче, щоб заповнити поля поста.\n" +
+      "Після відправлення форми бот опублікує ембед у цей канал.\n\n" +
+      "*Заповніть усі поля перед відправленням — попередній перегляд не оновлюється автоматично.*",
+  });
+  await interaction
+    .reply({
+      embeds: [preview],
+      components: buildPostStartView(),
+      flags: MessageFlags.Ephemeral,
+    })
+    .catch(() => undefined);
+}
+
+async function handlePostEdit(interaction: Interaction): Promise<void> {
+  if (!interaction.isButton()) return;
+  const userId = String(interaction.user.id);
+  const token = interaction.customId.includes(":") ? interaction.customId.split(":")[1] : undefined;
+  if (token) drafts.delete(token);
+  if (interaction.message && interaction.channelId) {
+    previewRefs.set(userId, { channelId: interaction.channelId, messageId: interaction.message.id });
+  }
+  await interaction.showModal(buildPostModal());
+}
+
+async function handlePostModal(interaction: Interaction): Promise<void> {
+  if (!interaction.isModalSubmit()) return;
+  const title = interaction.fields.getTextInputValue("post_title");
+  const description = interaction.fields.getTextInputValue("post_description");
+  const imageUrl = interaction.fields.getTextInputValue("post_image").trim();
+  const pingsRaw = interaction.fields.getTextInputValue("post_pings").trim();
+
+  const embed = baseEmbed({ title, description });
+
+  if (imageUrl) {
+    if (!imageUrl.startsWith("http://") && !imageUrl.startsWith("https://")) {
+      await interaction.reply({
+        content: "Посилання на зображення має починатися з `http://` або `https://`.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+    embed.setImage(imageUrl);
+  }
+
+  const mentions: string[] = [];
+  if (pingsRaw) {
+    const items = pingsRaw.split(",").map((s) => s.trim()).filter(Boolean);
+    const re = /^<@&([0-9]+)>$/;
+    for (const item of items) {
+      const match = re.exec(item);
+      if (!match) {
+        await interaction.reply({
+          content: "Пінги мають бути у форматі `<@&1234>` через кому, до 5 ролей.",
+          flags: MessageFlags.Ephemeral,
+        });
+        return;
+      }
+      mentions.push(match[1]);
+    }
+    const unique = [...new Set(mentions)];
+    if (unique.length > 5) {
+      await interaction.reply({
+        content: "Можна вказати не більше 5 пінг-ролей.",
+        flags: MessageFlags.Ephemeral,
+      });
+      return;
+    }
+  }
+
+  const token = crypto.randomBytes(6).toString("hex");
+  drafts.set(token, { title, description, imageUrl, pings: mentions });
+
+  embed.setFooter({ text: "Попередній перегляд" });
+
+  const userId = String(interaction.user.id);
+  const ref = previewRefs.get(userId);
+  if (ref) {
+    try {
+      await interaction.deferUpdate();
+      const ch = await interaction.client.channels.fetch(ref.channelId);
+      if (ch && "messages" in ch) {
+        const msg = await ch.messages.fetch(ref.messageId);
+        await msg.edit({ embeds: [embed], components: buildPostPreviewView(token) });
+        return;
+      }
+    } catch {}
+    await interaction
+      .editReply({ embeds: [embed], components: buildPostPreviewView(token) })
+      .catch(() => undefined);
+    return;
+  }
+
+  await interaction.reply({
+    embeds: [embed],
+    components: buildPostPreviewView(token),
+    flags: MessageFlags.Ephemeral,
+  });
+  const fetched = await interaction.fetchReply().catch(() => null);
+  if (fetched && interaction.channelId) {
+    previewRefs.set(userId, { channelId: interaction.channelId, messageId: fetched.id });
+  }
+}
+
+async function postPermissionCheck(interaction: Interaction): Promise<boolean> {
+  const member = interaction.member as GuildMember | null;
+  if (!canPost(member)) {
+    if (interaction.isRepliable()) {
+      await interaction
+        .reply({
+          content: "У вас немає прав для публікації постів.",
+          flags: MessageFlags.Ephemeral,
+        })
+        .catch(() => undefined);
+    }
+    return false;
+  }
+  return true;
+}
+
+async function handlePostPublish(interaction: Interaction): Promise<void> {
+  if (!interaction.isButton()) return;
+  const token = interaction.customId.split(":")[1];
+  const draft = drafts.get(token);
+  if (!draft) {
+    await interaction.reply({
+      content: "Чернетку поста не знайдено. Заповніть форму заново.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+  if (!(await postPermissionCheck(interaction))) return;
+
+  const embed = baseEmbed({ title: draft.title, description: draft.description });
+  if (draft.imageUrl) embed.setImage(draft.imageUrl);
+
+  const channel = interaction.channel;
+  if (!channel || !("send" in channel)) {
+    await interaction.reply({
+      content: "Не вдалося визначити канал для публікації.",
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  try {
+    if (draft.pings.length > 0) {
+      const mentionText = draft.pings.map((id) => `<@&${id}>`).join(" ");
+      await channel.send({ content: mentionText, embeds: [embed] });
+    } else {
+      await channel.send({ embeds: [embed] });
+    }
+  } catch (e) {
+    await interaction.reply({
+      content: `Не вдалося опублікувати пост: ${e instanceof Error ? e.message : String(e)}`,
+      flags: MessageFlags.Ephemeral,
+    });
+    return;
+  }
+
+  drafts.delete(token);
+  previewRefs.delete(String(interaction.user.id));
+  try {
+    await interaction.message.delete();
+  } catch {}
+  await interaction.reply({
+    content: "✅ Пост опубліковано в канал.",
+    flags: MessageFlags.Ephemeral,
+  });
+  log("info", `Пост опублікував користувач ${interaction.user.id}: ${draft.title.slice(0, 80)}`);
+}
+
+async function handlePostCancel(interaction: Interaction): Promise<void> {
+  if (!interaction.isButton()) return;
+  const token = interaction.customId.split(":")[1];
+  drafts.delete(token);
+  previewRefs.delete(String(interaction.user.id));
+  try {
+    await interaction.deferUpdate();
+  } catch {}
+  try {
+    await interaction.message.delete();
+  } catch {
+    await interaction
+      .editReply({ content: "Публікацію поста скасовано.", components: [] })
+      .catch(() => undefined);
+  }
+}
+
 const handlers: Record<string, (i: ChatInputCommandInteraction) => Promise<void>> = {
   menu: cmdMenu,
   embed: cmdEmbed,
@@ -1110,6 +1444,7 @@ const handlers: Record<string, (i: ChatInputCommandInteraction) => Promise<void>
   say: cmdSay,
   help: cmdHelp,
   status: cmdStatus,
+  post: cmdPost,
   warn: cmdWarn,
   warns: cmdWarns,
   unwarn: cmdUnwarn,
@@ -1162,6 +1497,9 @@ function buildCommands(): RESTPostAPIChatInputApplicationCommandsJSONBody[] {
     new SlashCommandBuilder()
       .setName("help")
       .setDescription("Список команд").toJSON(),
+    new SlashCommandBuilder()
+      .setName("post")
+      .setDescription("Опублікувати пост у цей канал").toJSON(),
     new SlashCommandBuilder()
       .setName("status")
       .setDescription("Інформація про бота").toJSON(),
@@ -1351,6 +1689,29 @@ client.on(Events.InteractionCreate, async (interaction) => {
       await handleEmbedMenu(interaction);
       return;
     }
+    if (interaction.isButton()) {
+      const id = interaction.customId;
+      if (id.startsWith("post_edit")) {
+        await handlePostEdit(interaction);
+        return;
+      }
+      if (id.startsWith("post_publish:")) {
+        await handlePostPublish(interaction);
+        return;
+      }
+      if (id.startsWith("post_cancel:")) {
+        await handlePostCancel(interaction);
+        return;
+      }
+      return;
+    }
+    if (interaction.isModalSubmit()) {
+      if (interaction.customId === "post_modal") {
+        await handlePostModal(interaction);
+        return;
+      }
+      return;
+    }
     if (interaction.isChatInputCommand()) {
       const handler = handlers[interaction.commandName];
       if (handler) {
@@ -1359,6 +1720,17 @@ client.on(Events.InteractionCreate, async (interaction) => {
     }
   } catch (e) {
     log("error", "Помилка в обробці взаємодії:", e);
+    await logErrorToChannel({
+      client,
+      commandName: interaction.isChatInputCommand()
+        ? interaction.commandName
+        : "customId" in interaction
+          ? interaction.customId
+          : "unknown",
+      error: e instanceof Error ? e : String(e),
+      userLabel: userLabel(interaction.user),
+      channelLabel: interaction.channelId ?? "—",
+    });
     if (interaction.isRepliable() && !interaction.replied && !interaction.deferred) {
       await interaction
         .reply({ content: "Сталася непередбачувана помилка.", flags: MessageFlags.Ephemeral })
