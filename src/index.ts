@@ -143,10 +143,7 @@ function memberOf(interaction: ChatInputCommandInteraction): GuildMember | null 
 
 function isAdmin(interaction: ChatInputCommandInteraction): boolean {
   const member = memberOf(interaction);
-  return (
-    !!member &&
-    (member.roles.cache.has(config.adminRoleId) || isGlobalAllowed(member))
-  );
+  return !!member && (isAdminRole(member) || isGlobalAllowed(member));
 }
 
 async function replyEphemeral(interaction: ChatInputCommandInteraction, content: string): Promise<void> {

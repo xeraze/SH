@@ -23,7 +23,7 @@ export const config = {
   token: process.env.TOKEN || process.env.DISCORD_TOKEN || "",
   guildId: process.env.GUILD_ID || "",
   prefix: process.env.PREFIX || "s.",
-  adminRoleId: process.env.ADMIN_ROLE_ID || "",
+  adminRoleIds: csv("ADMIN_ROLE_ID"),
   embedFolder: process.env.EMBED_FOLDER || "data",
   modLogChannelId: process.env.MOD_LOG_CHANNEL_ID || "",
   errorLogChannelId: process.env.ERROR_LOG_CHANNEL_ID || "",
@@ -32,7 +32,7 @@ export const config = {
   modRoleIds: csv("MOD_ROLE_IDS"),
   postRoleIds: csv("POST_ROLE_IDS"),
   embedColor: 0x34373c,
-  allowedGlobalUsers: csv("ALLOWED_GLOBAL_USERS"),
+  allowedGlobalUsers: csv("GLOBAL_ALLOW"),
   embedsReloadUsers: csv("EMBEDS_RELOAD_USERS"),
   dataDir: path.join(process.cwd(), "data"),
 } as const;

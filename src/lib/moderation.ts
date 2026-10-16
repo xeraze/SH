@@ -13,7 +13,8 @@ export function isGlobalAllowed(member: GuildMember): boolean {
 }
 
 export function isAdminRole(member: GuildMember): boolean {
-  return !!config.adminRoleId && member.roles.cache.has(config.adminRoleId);
+  if (config.adminRoleIds.length === 0) return false;
+  return member.roles.cache.some((r) => config.adminRoleIds.includes(r.id));
 }
 
 export function hasHigherRole(issuer: GuildMember, target: GuildMember): boolean {
